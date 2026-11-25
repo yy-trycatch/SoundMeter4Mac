@@ -30,11 +30,12 @@ final class CameraRecorder: NSObject, ObservableObject {
     struct TriggerEvent: Identifiable {
         let id = UUID()
         let date: Date
-        let dbC: Double
-        let threshold: Double
+        let dbImpact: Double
+        let excess: Double
+        let margin: Double
     }
 
-    /// 需要连续超过阈值多少秒才触发，避免单次瞬态（关门、敲键盘）误触发。
+    /// 需要连续多少秒检测到撞击才触发，默认 1 秒即单次撞击就录。
     @Published var holdSeconds: Double = UserDefaults.standard.object(forKey: "holdSeconds") as? Double ?? 1 {
         didSet { UserDefaults.standard.set(holdSeconds, forKey: "holdSeconds") }
     }
@@ -46,9 +47,9 @@ final class CameraRecorder: NSObject, ObservableObject {
         didSet { UserDefaults.standard.set(mode.rawValue, forKey: "captureMode") }
     }
 
-    /// 自动模式触发阈值，单位 dB(C)。
-    @Published var threshold: Double = UserDefaults.standard.object(forKey: "autoThreshold") as? Double ?? 70 {
-        didSet { UserDefaults.standard.set(threshold, forKey: "autoThreshold") }
+    /// 自动模式撞击判据：20–250 Hz 的 Fast 最大值高出背景噪声底多少 dB 算一次撞击。
+    @Published var impactMargin: Double = UserDefaults.standard.object(forKey: "impactMargin") as? Double ?? 10 {
+        didSet { UserDefaults.standard.set(impactMargin, forKey: "impactMargin") }
     }
 
     /// 自动模式单段录制时长（分钟）。
@@ -242,6 +243,7 @@ final class CameraRecorder: NSObject, ObservableObject {
     /// 叠加用的实时分贝值与累计统计。主线程写、采集队列读，用锁保护。
     private let levelLock = NSLock()
     private var overlayLevels: (a: Double, c: Double)?
+    private var overlayImpact: (db: Double, excess: Double)?
     private var overlayStats: LevelStats?
     /// 水印使用的权重，主线程写、采集队列读，随 levelLock 同步。
     private var overlayWeighting: Weighting =
@@ -258,13 +260,13 @@ final class CameraRecorder: NSObject, ObservableObject {
     }
 
     /// 自动模式的触发判定抽成纯函数，便于离线校验真值表。
-    /// 以 dB(C) 与阈值比较；secondsAbove 为「已连续达到阈值的秒数」，需 >= holdSeconds 才触发。
-    /// 不要求摄像头已开启：自动模式下摄像头默认关闭，达到阈值时才启动采集。
+    /// 以撞击频段高出背景的 dB 数与判据比较；secondsAbove 为「已连续检测到撞击的秒数」，需 >= holdSeconds 才触发。
+    /// 不要求摄像头已开启：自动模式下摄像头默认关闭，检测到撞击时才启动采集。
     static func shouldAutoStart(mode: CaptureMode, recording: Bool,
-                                dbC: Double, threshold: Double,
+                                impactExcess: Double, margin: Double,
                                 secondsAbove: Int, holdSeconds: Double) -> Bool {
         guard mode == .auto, !recording else { return false }
-        guard dbC >= threshold else { return false }
+        guard impactExcess >= margin else { return false }
         return secondsAbove >= max(1, Int(holdSeconds.rounded()))
     }
 
@@ -272,21 +274,24 @@ final class CameraRecorder: NSObject, ObservableObject {
         mode == .auto && elapsed >= Int(segmentMinutes * 60)
     }
 
-    func updateLevels(dbA: Double, dbC: Double, stats: LevelStats? = nil) {
+    func updateLevels(dbA: Double, dbC: Double, dbImpact: Double, impactExcess: Double,
+                      stats: LevelStats? = nil) {
         levelLock.lock()
         overlayLevels = (dbA, dbC)
+        overlayImpact = (dbImpact, impactExcess)
         overlayStats = stats
         levelLock.unlock()
 
-        // 连续达到阈值计数（按 dB(C)）：低于阈值立刻归零
-        secondsAboveThreshold = dbC >= threshold ? secondsAboveThreshold + 1 : 0
+        // 连续检测到撞击的秒数：某一秒没有撞击立刻归零
+        secondsAboveThreshold = impactExcess >= impactMargin ? secondsAboveThreshold + 1 : 0
 
-        // 自动模式：环境噪音（dB(C)）连续达到阈值就启动采集并录一段（已在录制中则忽略）。
+        // 自动模式：撞击频段连续高出背景达到判据就启动采集并录一段（已在录制中则忽略）。
         if Self.shouldAutoStart(mode: mode, recording: isRecording,
-                                dbC: dbC, threshold: threshold,
+                                impactExcess: impactExcess, margin: impactMargin,
                                 secondsAbove: secondsAboveThreshold, holdSeconds: holdSeconds) {
             autoTriggerCount += 1
-            triggerEvents.insert(TriggerEvent(date: Date(), dbC: dbC, threshold: threshold), at: 0)
+            triggerEvents.insert(TriggerEvent(date: Date(), dbImpact: dbImpact,
+                                              excess: impactExcess, margin: impactMargin), at: 0)
             if triggerEvents.count > 10 { triggerEvents.removeLast() }
             autoStart()
         }
@@ -311,6 +316,7 @@ final class CameraRecorder: NSObject, ObservableObject {
         let status = recordingFlag ? "[REC]" : "[监测]"
         levelLock.lock()
         let levels = overlayLevels
+        let hit = overlayImpact
         let stats = overlayStats
         let useC = overlayWeighting == .c
         levelLock.unlock()
@@ -332,6 +338,8 @@ final class CameraRecorder: NSObject, ObservableObject {
             "最大分贝: \(val(stats?.maxC, stats?.maxA))",
             "最小分贝: \(val(stats?.minC, stats?.minA))",
             "当前分贝: \(val(levels?.c, levels?.a))",
+            "撞击声(20-250Hz): " + (hit.map { $0.db > -150
+                ? String(format: "%.1f dB  高于背景 %.1f dB", $0.db, $0.excess) : "无" } ?? "--"),
             String(format: "当前录制时长: %02d:%02d:%02d", elapsed / 3600, elapsed % 3600 / 60, elapsed % 60)
         ]
     }

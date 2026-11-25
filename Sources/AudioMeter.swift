@@ -8,6 +8,12 @@ struct Reading: Identifiable, Equatable {
     let dbA: Double
     let dbC: Double
     let dbZ: Double
+    /// 撞击声通道（20–250 Hz、Fast 最大值、已扣除背景噪声底），dB；无撞击时为 -200。
+    let dbImpact: Double
+    /// 撞击频段的背景噪声底，dB。
+    let dbImpactFloor: Double
+    /// 本秒撞击频段 Fast 最大值高出背景的 dB 数，用于自动触发。
+    let impactExcess: Double
 
     func value(for w: Weighting) -> Double {
         switch w {
@@ -46,6 +52,7 @@ final class AudioMeter: ObservableObject {
     private var hann = [Float]()
     private var gains: [Weighting: [Double]] = [:]
     private var sampleRate: Double = 48000
+    private var impact = ImpactDetector(sampleRate: 48000)
 
     private var pending = [Float]()           // 未处理的输入样本
     private var energy: [Weighting: Double] = [:]  // 本秒累计的计权均方值
@@ -137,6 +144,7 @@ final class AudioMeter: ObservableObject {
         gains = Dictionary(uniqueKeysWithValues: Weighting.allCases.map {
             ($0, $0.powerGains(fftSize: fftSize, sampleRate: sampleRate))
         })
+        impact = ImpactDetector(sampleRate: sampleRate)
         resetAccumulators()
     }
 
@@ -151,6 +159,7 @@ final class AudioMeter: ObservableObject {
     func consume(_ samples: [Float]) {
         pending.append(contentsOf: samples)
         samplesThisSecond += samples.count
+        impact.process(samples)
 
         while pending.count >= fftSize {
             analyze(block: Array(pending[0..<fftSize]))
@@ -168,7 +177,14 @@ final class AudioMeter: ObservableObject {
             guard meanSquare > 0 else { return -200 }
             return 10 * log10(meanSquare) + calibrationOffset
         }
-        let reading = Reading(date: Date(), dbA: level(.a), dbC: level(.c), dbZ: level(.z))
+        func spl(_ meanSquare: Double?) -> Double {
+            guard let meanSquare, meanSquare > 0 else { return -200 }
+            return 10 * log10(meanSquare) + calibrationOffset
+        }
+        let hit = impact.finishSecond()
+        let reading = Reading(date: Date(), dbA: level(.a), dbC: level(.c), dbZ: level(.z),
+                              dbImpact: spl(hit?.residualMS), dbImpactFloor: spl(hit?.floorMS),
+                              impactExcess: hit?.excessDB ?? 0)
         latest = reading
         readings.append(reading)
         onReading?(reading)

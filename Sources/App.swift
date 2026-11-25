@@ -14,6 +14,7 @@ struct AudioCatcherApp: App {
                     // 分贝值实时送去合成到视频画面（含累计最小/平均/最大统计）
                     meter.onReading = { [weak meter, weak camera] reading in
                         camera?.updateLevels(dbA: reading.dbA, dbC: reading.dbC,
+                                             dbImpact: reading.dbImpact, impactExcess: reading.impactExcess,
                                              stats: meter?.levelStats())
                     }
                 }
@@ -38,7 +39,8 @@ struct ContentView: View {
     private var points: [ChartPoint] {
         recent.flatMap {
             [ChartPoint(date: $0.date, value: $0.dbA, series: "dB(A)"),
-             ChartPoint(date: $0.date, value: $0.dbC, series: "dB(C)")]
+             ChartPoint(date: $0.date, value: $0.dbC, series: "dB(C)"),
+             ChartPoint(date: $0.date, value: $0.dbImpact, series: "撞击声(扣背景)")]
         }
     }
 
@@ -77,6 +79,8 @@ struct ContentView: View {
                     .foregroundStyle(isCapturing ? (camera.isRecording ? .red : .green) : .secondary)
                 Text("已记录 \(meter.readings.count) 条").font(.caption).foregroundStyle(.secondary)
                 readout("dB(Z)", meter.latest?.dbZ)
+                readout("撞击声 20–250Hz", meter.latest?.dbImpact)
+                readout("撞击频段背景", meter.latest?.dbImpactFloor)
             }
         }
     }
@@ -93,7 +97,7 @@ struct ContentView: View {
     private func readout(_ title: String, _ value: Double?) -> some View {
         HStack(spacing: 6) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value.map { String(format: "%.1f", $0) } ?? "--")
+            Text(value.map { $0 > -150 ? String(format: "%.1f", $0) : "--" } ?? "--")
                 .font(.title3).monospacedDigit()
         }
     }
@@ -185,7 +189,7 @@ struct ContentView: View {
                     } else {
                         meter.start()
                         camera.startLocation()
-                        // 自动模式先只做音频监测，dB(C) 达到阈值再启动摄像头；手动模式立即开录。
+                        // 自动模式先只做音频监测，检测到撞击声再启动摄像头；手动模式立即开录。
                         if camera.mode == .manual { camera.startCapture() }
                     }
                 }
@@ -227,11 +231,11 @@ struct ContentView: View {
 
                 if camera.mode == .auto {
                     HStack(spacing: 6) {
-                        Text("触发阈值").font(.caption).foregroundStyle(.secondary)
-                        Stepper(value: $camera.threshold, in: 20...130, step: 1) {
-                            Text(String(format: "%.0f dB(C)", camera.threshold)).monospacedDigit()
+                        Text("撞击判据 高于背景").font(.caption).foregroundStyle(.secondary)
+                        Stepper(value: $camera.impactMargin, in: 3...40, step: 1) {
+                            Text(String(format: "%.0f dB", camera.impactMargin)).monospacedDigit()
                         }
-                        .frame(width: 150)
+                        .frame(width: 110)
                     }
                     HStack(spacing: 6) {
                         Text("单段时长").font(.caption).foregroundStyle(.secondary)
@@ -241,7 +245,7 @@ struct ContentView: View {
                         .frame(width: 150)
                     }
                     HStack(spacing: 6) {
-                        Text("持续超阈值").font(.caption).foregroundStyle(.secondary)
+                        Text("连续撞击").font(.caption).foregroundStyle(.secondary)
                         Stepper(value: $camera.holdSeconds, in: 1...30, step: 1) {
                             Text(String(format: "%.0f 秒", camera.holdSeconds)).monospacedDigit()
                         }
@@ -259,12 +263,12 @@ struct ContentView: View {
         case .manual:
             return "手动模式：点「开始」立即录制"
         case .auto:
-            if !isCapturing { return "自动模式：点「开始」后仅音频监测，dB(C) 达到阈值才启动摄像头录制" }
+            if !isCapturing { return "自动模式：点「开始」后仅音频监测，检测到撞击声才启动摄像头录制" }
             if camera.isRecording {
                 let left = max(0, Int(camera.segmentMinutes * 60) - camera.recordedSeconds)
                 return "录制中 · 剩余 \(left / 60):\(String(format: "%02d", left % 60)) · 已触发 \(camera.autoTriggerCount) 次"
             }
-            return "监测中（摄像头待命）· 连续达标 \(camera.secondsAboveThreshold)/\(Int(camera.holdSeconds)) 秒 · 已触发 \(camera.autoTriggerCount) 次"
+            return "监测中（摄像头待命）· 连续撞击 \(camera.secondsAboveThreshold)/\(Int(camera.holdSeconds)) 秒 · 已触发 \(camera.autoTriggerCount) 次"
         }
     }
 

@@ -17,10 +17,12 @@ enum Exporter {
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
 
         var csv = "\u{FEFF}"  // BOM，避免 Excel 打开中文表头乱码
-        csv += "时间,dB(A),dB(C),dB(Z),校准偏移\n"
+        csv += "时间,dB(A),dB(C),dB(Z),撞击声20-250Hz(扣背景),撞击频段背景,高于背景dB,校准偏移\n"
         for r in readings {
             csv += "\(formatter.string(from: r.date)),"
-            csv += String(format: "%.1f,%.1f,%.1f,%.1f\n", r.dbA, r.dbC, r.dbZ, calibrationOffset)
+            csv += String(format: "%.1f,%.1f,%.1f,", r.dbA, r.dbC, r.dbZ)
+            csv += "\(cell(r.dbImpact)),\(cell(r.dbImpactFloor)),"
+            csv += String(format: "%.1f,%.1f\n", r.impactExcess, calibrationOffset)
         }
 
         do {
@@ -31,6 +33,11 @@ enum Exporter {
             alert.informativeText = error.localizedDescription
             alert.runModal()
         }
+    }
+
+    /// 无撞击（-200）时留空，避免 Excel 里出现无意义的极小值。
+    private static func cell(_ db: Double) -> String {
+        db > -150 ? String(format: "%.1f", db) : ""
     }
 
     private static func defaultFileName() -> String {

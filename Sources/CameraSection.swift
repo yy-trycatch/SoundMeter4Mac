@@ -37,8 +37,9 @@ struct CameraSection: View {
                 if !camera.triggerEvents.isEmpty {
                     Text("最近自动触发：")
                     ForEach(camera.triggerEvents.prefix(5)) { event in
-                        Text(String(format: "  %@  触发值 %.1f dB(C) ≥ 阈值 %.0f",
-                                    timeFormatter.string(from: event.date), event.dbC, event.threshold))
+                        Text(String(format: "  %@  撞击声 %.1f dB，高于背景 %.1f dB ≥ 判据 %.0f",
+                                    timeFormatter.string(from: event.date), event.dbImpact,
+                                    event.excess, event.margin))
                             .monospacedDigit()
                     }
                 }
@@ -66,8 +67,8 @@ struct CameraSection: View {
                     .aspectRatio(contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             } else if isMonitoring && camera.mode == .auto && !camera.isPreviewing {
-                // 自动模式已开始监测但环境音尚未达标：中间给出明确阈值提示。
-                Text(String(format: "未达到设定的 %.0f dB(C) 阈值", camera.threshold))
+                // 自动模式已开始监测但尚未检测到撞击：中间给出明确判据提示。
+                Text(String(format: "未检测到撞击声（判据：20–250 Hz 高于背景 %.0f dB）", camera.impactMargin))
                     .font(.title3)
                     .foregroundStyle(.orange)
             } else {
@@ -81,7 +82,7 @@ struct CameraSection: View {
     private var placeholderText: String {
         if camera.isPreviewing { return "等待画面…" }
         return camera.mode == .auto
-            ? "自动模式：环境 dB(C) 达到阈值后自动开启摄像头录制"
+            ? "自动模式：检测到楼上蹦跳、敲墙等撞击声后自动开启摄像头录制"
             : "点击「开始」同时采集音频与视频"
     }
 
